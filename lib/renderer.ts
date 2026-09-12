@@ -3,8 +3,8 @@ export type TileStyle = {
   borderColor: string;
   borderWidthRatio: number;
   numberColor: string;
-  numberStrokeColor: string;
-  numberStrokeRatio: number;
+  numberShadowColor: string;
+  numberShadowOffsetRatio: number;
   fontFamily: string;
   shadowColor: string;
   shadowBlurRatio: number;
@@ -15,13 +15,13 @@ export type TileStyle = {
 
 export const defaultTileStyle: TileStyle = {
   fillColor: "#e94456",
-  borderColor: "#000000",
+  borderColor: "#ffffff",
   borderWidthRatio: 0.006,
   numberColor: "#ffffff",
-  numberStrokeColor: "rgba(0,0,0,0.35)",
-  numberStrokeRatio: 0.045,
+  numberShadowColor: "#000000",
+  numberShadowOffsetRatio: 0.04,
   fontFamily:
-    '"Hiragino Sans W8", "Hiragino Sans", "Yu Gothic UI Bold", "Yu Gothic Bold", "Arial Black", sans-serif',
+    '"Impact", "Arial Black", "Helvetica Neue", "Hiragino Sans W8", "Yu Gothic UI Bold", sans-serif',
   shadowColor: "rgba(0,0,0,0)",
   shadowBlurRatio: 0,
   cornerRadiusRatio: 0,
@@ -169,8 +169,8 @@ function drawCircledNumber(
   num: number,
   style: TileStyle,
 ): void {
-  const circleRadius = tileSize * 0.085;
-  const margin = tileSize * 0.06;
+  const circleRadius = tileSize * 0.06;
+  const margin = tileSize * 0.05;
   const cx = tileX + margin + circleRadius;
   const cy = tileY + margin + circleRadius;
 
@@ -205,11 +205,14 @@ function drawCenteredLabel(
 
   ctx.save();
   ctx.textAlign = "left";
-  ctx.textBaseline = "middle";
-  ctx.lineJoin = "round";
+  ctx.textBaseline = "alphabetic";
 
   ctx.font = `900 ${fontSize}px ${style.fontFamily}`;
-  const digitWidth = ctx.measureText(digit).width;
+  const digitMetrics = ctx.measureText(digit);
+  const digitWidth = digitMetrics.width;
+  const ascent = digitMetrics.actualBoundingBoxAscent || fontSize * 0.75;
+  const descent = digitMetrics.actualBoundingBoxDescent || fontSize * 0.05;
+
   let suffixWidth = 0;
   if (suffix) {
     ctx.font = `900 ${suffixFontSize}px ${style.fontFamily}`;
@@ -218,22 +221,24 @@ function drawCenteredLabel(
 
   const totalWidth = digitWidth + suffixWidth;
   const startX = tileX + (tileSize - totalWidth) / 2;
-  const centerY = tileY + tileSize / 2 + fontSize * 0.05;
+  const baselineY = tileY + tileSize / 2 + (ascent - descent) / 2;
 
+  const offset = fontSize * style.numberShadowOffsetRatio;
+
+  ctx.fillStyle = style.numberShadowColor;
   ctx.font = `900 ${fontSize}px ${style.fontFamily}`;
-  ctx.lineWidth = fontSize * style.numberStrokeRatio;
-  ctx.strokeStyle = style.numberStrokeColor;
-  ctx.strokeText(digit, startX, centerY);
-  ctx.fillStyle = style.numberColor;
-  ctx.fillText(digit, startX, centerY);
-
+  ctx.fillText(digit, startX + offset, baselineY + offset);
   if (suffix) {
     ctx.font = `900 ${suffixFontSize}px ${style.fontFamily}`;
-    ctx.lineWidth = suffixFontSize * style.numberStrokeRatio;
-    ctx.strokeStyle = style.numberStrokeColor;
-    ctx.strokeText(suffix, startX + digitWidth, centerY);
-    ctx.fillStyle = style.numberColor;
-    ctx.fillText(suffix, startX + digitWidth, centerY);
+    ctx.fillText(suffix, startX + digitWidth + offset, baselineY + offset);
+  }
+
+  ctx.fillStyle = style.numberColor;
+  ctx.font = `900 ${fontSize}px ${style.fontFamily}`;
+  ctx.fillText(digit, startX, baselineY);
+  if (suffix) {
+    ctx.font = `900 ${suffixFontSize}px ${style.fontFamily}`;
+    ctx.fillText(suffix, startX + digitWidth, baselineY);
   }
   ctx.restore();
 }
