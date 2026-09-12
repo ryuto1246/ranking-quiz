@@ -15,7 +15,7 @@ export type TileStyle = {
 
 export const defaultTileStyle: TileStyle = {
   fillColor: "#e94456",
-  borderColor: "#ffffff",
+  borderColor: "#000000",
   borderWidthRatio: 0.006,
   numberColor: "#ffffff",
   numberShadowColor: "#000000",
@@ -169,19 +169,19 @@ function drawCircledNumber(
   num: number,
   style: TileStyle,
 ): void {
-  const circleRadius = tileSize * 0.06;
-  const margin = tileSize * 0.05;
+  const circleRadius = tileSize * 0.055;
+  const margin = tileSize * 0.045;
   const cx = tileX + margin + circleRadius;
   const cy = tileY + margin + circleRadius;
 
   ctx.save();
   ctx.beginPath();
   ctx.arc(cx, cy, circleRadius, 0, Math.PI * 2);
-  ctx.strokeStyle = style.borderColor;
+  ctx.strokeStyle = style.numberColor;
   ctx.lineWidth = Math.max(1, tileSize * 0.006);
   ctx.stroke();
 
-  const fontSize = circleRadius * 0.95;
+  const fontSize = circleRadius * 1.35;
   ctx.font = `700 ${fontSize}px ${style.fontFamily}`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
