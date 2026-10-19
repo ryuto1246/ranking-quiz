@@ -16,18 +16,36 @@ import {
   getTileAtPoint,
   loadImageFromFile,
   renderFrame,
+  type Rect,
   type TileStyle,
 } from "@/lib/renderer";
 import { randomSeedString, seededShuffle } from "@/lib/random";
 import { downloadZip } from "@/lib/download";
 
 const GRID_OPTIONS = [3, 4, 5, 6, 7] as const;
-const RESOLUTION_OPTIONS = [
-  { label: "1080 × 1080 (Full HD)", value: 1080 },
-  { label: "1440 × 1440", value: 1440 },
-  { label: "1920 × 1920 (4K相当)", value: 1920 },
-  { label: "2160 × 2160", value: 2160 },
-] as const;
+
+type OutputAspectKey = "content" | "1:1" | "9:16" | "16:9";
+const OUTPUT_ASPECTS: {
+  key: OutputAspectKey;
+  label: string;
+  ratio: number | null;
+}[] = [
+  { key: "content", label: "内容そのまま", ratio: null },
+  { key: "1:1", label: "1:1 (正方形)", ratio: 1 },
+  { key: "9:16", label: "9:16 (縦長・下寄せ)", ratio: 9 / 16 },
+  { key: "16:9", label: "16:9 (横長・下寄せ)", ratio: 16 / 9 },
+];
+
+const WIDTH_PRESETS = [1080, 1440, 1920, 2160] as const;
+
+type Aspect = { w: number; h: number };
+const ASPECT_PRESETS: { label: string; aspect: Aspect }[] = [
+  { label: "1:1", aspect: { w: 1, h: 1 } },
+  { label: "4:3", aspect: { w: 4, h: 3 } },
+  { label: "3:4", aspect: { w: 3, h: 4 } },
+  { label: "16:9", aspect: { w: 16, h: 9 } },
+  { label: "9:16", aspect: { w: 9, h: 16 } },
+];
 
 type Theme = { name: string; style: TileStyle };
 const THEMES: Theme[] = [
@@ -59,17 +77,62 @@ const SUFFIX_OPTIONS = [
   { label: "「N」のみ", value: "" },
 ] as const;
 
+type EditMode = "sequence" | "arrangement";
+
+function computeCanvasSize(
+  aspect: OutputAspectKey,
+  baseWidth: number,
+  tileAspect: Aspect,
+): { width: number; height: number } {
+  if (aspect === "content") {
+    const contentAspect = tileAspect.w / tileAspect.h;
+    const height = Math.round(baseWidth / contentAspect);
+    return { width: baseWidth, height };
+  }
+  const spec = OUTPUT_ASPECTS.find((o) => o.key === aspect);
+  const ratio = spec?.ratio ?? 1;
+  const height = Math.round(baseWidth / ratio);
+  return { width: baseWidth, height };
+}
+
+function computeContentRect(
+  canvasWidth: number,
+  canvasHeight: number,
+  tileAspect: Aspect,
+): Rect {
+  const contentAspect = tileAspect.w / tileAspect.h;
+  const canvasAspect = canvasWidth / canvasHeight;
+  let contentWidth: number;
+  let contentHeight: number;
+  if (contentAspect >= canvasAspect) {
+    contentWidth = canvasWidth;
+    contentHeight = canvasWidth / contentAspect;
+  } else {
+    contentHeight = canvasHeight;
+    contentWidth = canvasHeight * contentAspect;
+  }
+  const x = (canvasWidth - contentWidth) / 2;
+  const y = canvasHeight - contentHeight;
+  return { x, y, width: contentWidth, height: contentHeight };
+}
+
 export default function Home() {
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   const [imageName, setImageName] = useState<string>("");
   const [gridSize, setGridSize] = useState<number>(5);
   const [seed, setSeed] = useState<string>("quiz-01");
-  const [canvasSize, setCanvasSize] = useState<number>(1080);
+  const [outputAspect, setOutputAspect] = useState<OutputAspectKey>("content");
+  const [outputWidth, setOutputWidth] = useState<number>(1080);
+  const [tileAspect, setTileAspect] = useState<Aspect>({ w: 1, h: 1 });
   const [themeIndex, setThemeIndex] = useState<number>(0);
   const [showCircledIndex, setShowCircledIndex] = useState<boolean>(true);
   const [numberSuffix, setNumberSuffix] = useState<string>("位");
+  const [numbers, setNumbers] = useState<number[]>([]);
   const [sequence, setSequence] = useState<number[]>([]);
   const [revealedStep, setRevealedStep] = useState<number>(0);
+  const [editMode, setEditMode] = useState<EditMode>("sequence");
+  const [draggingNum, setDraggingNum] = useState<number | null>(null);
+  const [hoverNum, setHoverNum] = useState<number | null>(null);
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [progress, setProgress] = useState<{
@@ -89,14 +152,26 @@ export default function Home() {
     [themeIndex, showCircledIndex, numberSuffix],
   );
 
-  const numbers = useMemo(
-    () =>
+  const { width: canvasWidth, height: canvasHeight } = useMemo(
+    () => computeCanvasSize(outputAspect, outputWidth, tileAspect),
+    [outputAspect, outputWidth, tileAspect],
+  );
+
+  const content = useMemo(
+    () => computeContentRect(canvasWidth, canvasHeight, tileAspect),
+    [canvasWidth, canvasHeight, tileAspect],
+  );
+
+  useEffect(() => {
+    setNumbers(
       seededShuffle(
         Array.from({ length: totalTiles }, (_, i) => i + 1),
         `${seed}::${gridSize}`,
       ),
-    [seed, gridSize, totalTiles],
-  );
+    );
+    setSequence([]);
+    setRevealedStep(0);
+  }, [seed, gridSize, totalTiles]);
 
   useEffect(() => {
     setSequence((prev) => prev.filter((n) => n >= 1 && n <= totalTiles));
@@ -112,17 +187,24 @@ export default function Home() {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    canvas.width = canvasSize;
-    canvas.height = canvasSize;
+    canvas.width = canvasWidth;
+    canvas.height = canvasHeight;
+
+    ctx.clearRect(0, 0, canvasWidth, canvasHeight);
 
     if (!image) {
       ctx.fillStyle = "#111111";
-      ctx.fillRect(0, 0, canvasSize, canvasSize);
+      ctx.fillRect(content.x, content.y, content.width, content.height);
       ctx.fillStyle = "#525252";
-      ctx.font = `${canvasSize * 0.035}px sans-serif`;
+      const minSide = Math.min(content.width, content.height);
+      ctx.font = `${minSide * 0.035}px sans-serif`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText("背景画像をアップロード", canvasSize / 2, canvasSize / 2);
+      ctx.fillText(
+        "背景画像をアップロード",
+        content.x + content.width / 2,
+        content.y + content.height / 2,
+      );
       return;
     }
 
@@ -134,8 +216,12 @@ export default function Home() {
       gridSize,
       numbers,
       revealedNumbers: revealedSet,
-      canvasSize,
+      canvasWidth,
+      canvasHeight,
+      content,
       tileStyle,
+      highlight:
+        editMode === "arrangement" ? { draggingNum, hoverNum } : undefined,
     });
   }, [
     image,
@@ -143,8 +229,13 @@ export default function Home() {
     numbers,
     sequence,
     revealedStep,
-    canvasSize,
+    canvasWidth,
+    canvasHeight,
+    content,
     tileStyle,
+    editMode,
+    draggingNum,
+    hoverNum,
   ]);
 
   const onFileSelect = useCallback(async (file: File) => {
@@ -179,11 +270,24 @@ export default function Home() {
 
   const onDragLeave = () => setIsDragging(false);
 
-  const onCanvasClick = (e: ReactMouseEvent<HTMLCanvasElement>) => {
-    if (!image) return;
+  const pickTile = (clientX: number, clientY: number): number | null => {
     const canvas = previewCanvasRef.current;
-    if (!canvas) return;
-    const num = getTileAtPoint(e.clientX, e.clientY, canvas, gridSize, numbers);
+    if (!canvas) return null;
+    return getTileAtPoint(
+      clientX,
+      clientY,
+      canvas,
+      gridSize,
+      numbers,
+      canvasWidth,
+      canvasHeight,
+      content,
+    );
+  };
+
+  const onCanvasClick = (e: ReactMouseEvent<HTMLCanvasElement>) => {
+    if (!image || editMode !== "sequence") return;
+    const num = pickTile(e.clientX, e.clientY);
     if (num == null) return;
     setSequence((prev) => {
       const idx = prev.indexOf(num);
@@ -195,6 +299,64 @@ export default function Home() {
       }
       return next;
     });
+  };
+
+  const onCanvasMouseDown = (e: ReactMouseEvent<HTMLCanvasElement>) => {
+    if (!image || editMode !== "arrangement") return;
+    const num = pickTile(e.clientX, e.clientY);
+    if (num == null) return;
+    setDraggingNum(num);
+    setHoverNum(num);
+  };
+
+  const onCanvasMouseMove = (e: ReactMouseEvent<HTMLCanvasElement>) => {
+    if (editMode !== "arrangement" || draggingNum == null) return;
+    const num = pickTile(e.clientX, e.clientY);
+    setHoverNum(num);
+  };
+
+  const commitSwap = () => {
+    if (draggingNum == null) return;
+    if (hoverNum != null && hoverNum !== draggingNum) {
+      const i = numbers.indexOf(draggingNum);
+      const j = numbers.indexOf(hoverNum);
+      if (i >= 0 && j >= 0) {
+        const next = numbers.slice();
+        [next[i], next[j]] = [next[j], next[i]];
+        setNumbers(next);
+      }
+    }
+    setDraggingNum(null);
+    setHoverNum(null);
+  };
+
+  const onCanvasMouseUp = () => {
+    if (editMode === "arrangement") commitSwap();
+  };
+
+  const onCanvasMouseLeave = () => {
+    if (editMode === "arrangement" && draggingNum != null) {
+      setDraggingNum(null);
+      setHoverNum(null);
+    }
+  };
+
+  const reshuffle = () => {
+    setNumbers(
+      seededShuffle(
+        Array.from({ length: totalTiles }, (_, i) => i + 1),
+        `${seed}::${gridSize}::${Math.random()}`,
+      ),
+    );
+  };
+
+  const resetArrangement = () => {
+    setNumbers(
+      seededShuffle(
+        Array.from({ length: totalTiles }, (_, i) => i + 1),
+        `${seed}::${gridSize}`,
+      ),
+    );
   };
 
   const removeFromSequence = (num: number) => {
@@ -219,6 +381,11 @@ export default function Home() {
     setRevealedStep(next.length);
   };
 
+  const onTileAspectChange = (axis: "w" | "h", value: number) => {
+    if (!Number.isFinite(value) || value <= 0) return;
+    setTileAspect((prev) => ({ ...prev, [axis]: value }));
+  };
+
   const onDownload = async () => {
     if (!image) return;
     if (sequence.length === 0) {
@@ -230,8 +397,8 @@ export default function Home() {
     setProgress({ current: 0, total: totalFrames });
     try {
       const canvas = document.createElement("canvas");
-      canvas.width = canvasSize;
-      canvas.height = canvasSize;
+      canvas.width = canvasWidth;
+      canvas.height = canvasHeight;
       const ctx = canvas.getContext("2d");
       if (!ctx) throw new Error("canvas context unavailable");
 
@@ -246,12 +413,17 @@ export default function Home() {
           gridSize,
           numbers,
           revealedNumbers: revealedSet,
-          canvasSize,
+          canvasWidth,
+          canvasHeight,
+          content,
           tileStyle,
         });
         const blob = await canvasToBlob(canvas, "image/png");
         const padded = String(step).padStart(digits, "0");
-        const openedNum = step === 0 ? "start" : `open${String(sequence[step - 1]).padStart(2, "0")}`;
+        const openedNum =
+          step === 0
+            ? "start"
+            : `open${String(sequence[step - 1]).padStart(2, "0")}`;
         files.push({ name: `frame_${padded}_${openedNum}.png`, blob });
         setProgress({ current: step + 1, total: totalFrames });
         await new Promise((r) => setTimeout(r, 0));
@@ -270,6 +442,16 @@ export default function Home() {
       setProgress(null);
     }
   };
+
+  const previewCursor = !image
+    ? "cursor-default"
+    : editMode === "arrangement"
+      ? draggingNum != null
+        ? "cursor-grabbing"
+        : "cursor-grab"
+      : "cursor-pointer";
+
+  const previewAspect = `${canvasWidth} / ${canvasHeight}`;
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-6 p-6 md:p-8">
@@ -354,16 +536,75 @@ export default function Home() {
           </section>
 
           <section>
+            <h2 className="mb-2 text-sm font-semibold text-neutral-300">
+              タイル比率（幅 : 高さ）
+            </h2>
+            <div className="mb-2 flex flex-wrap gap-2">
+              {ASPECT_PRESETS.map((p) => {
+                const active =
+                  tileAspect.w === p.aspect.w && tileAspect.h === p.aspect.h;
+                return (
+                  <button
+                    key={p.label}
+                    onClick={() => setTileAspect(p.aspect)}
+                    className={`rounded-md px-3 py-1.5 text-sm transition ${
+                      active
+                        ? "bg-amber-500 font-semibold text-neutral-950"
+                        : "bg-neutral-800 text-neutral-200 hover:bg-neutral-700"
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="flex items-center gap-2 text-sm">
+              <input
+                type="number"
+                min={1}
+                step={1}
+                value={tileAspect.w}
+                onChange={(e) =>
+                  onTileAspectChange("w", Number(e.target.value))
+                }
+                className="w-20 rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 text-neutral-100 focus:border-amber-500 focus:outline-none"
+              />
+              <span className="text-neutral-500">:</span>
+              <input
+                type="number"
+                min={1}
+                step={1}
+                value={tileAspect.h}
+                onChange={(e) =>
+                  onTileAspectChange("h", Number(e.target.value))
+                }
+                className="w-20 rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 text-neutral-100 focus:border-amber-500 focus:outline-none"
+              />
+              <span className="text-xs text-neutral-500">
+                （タイル1枚の比率）
+              </span>
+            </div>
+          </section>
+
+          <section>
             <div className="mb-2 flex items-center justify-between">
               <h2 className="text-sm font-semibold text-neutral-300">
                 配置シード
               </h2>
-              <button
-                onClick={() => setSeed(randomSeedString())}
-                className="rounded-md bg-neutral-800 px-2.5 py-1 text-xs text-neutral-300 transition hover:bg-neutral-700"
-              >
-                ランダム
-              </button>
+              <div className="flex gap-1">
+                <button
+                  onClick={reshuffle}
+                  className="rounded-md bg-neutral-800 px-2.5 py-1 text-xs text-neutral-300 transition hover:bg-neutral-700"
+                >
+                  再シャッフル
+                </button>
+                <button
+                  onClick={() => setSeed(randomSeedString())}
+                  className="rounded-md bg-neutral-800 px-2.5 py-1 text-xs text-neutral-300 transition hover:bg-neutral-700"
+                >
+                  ランダム
+                </button>
+              </div>
             </div>
             <input
               type="text"
@@ -373,25 +614,58 @@ export default function Home() {
               className="w-full rounded-md border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-100 focus:border-amber-500 focus:outline-none"
             />
             <p className="mt-1.5 text-xs text-neutral-500">
-              同じシード & グリッドなら同じ配置を再現できます。
+              同じシード & グリッドなら同じ配置を再現できます。手動の入れ替え後は「配置リセット」でシード通りに戻せます。
             </p>
+            <button
+              onClick={resetArrangement}
+              className="mt-2 rounded-md bg-neutral-800 px-2.5 py-1 text-xs text-neutral-300 transition hover:bg-neutral-700"
+            >
+              配置リセット
+            </button>
           </section>
 
           <section>
             <h2 className="mb-2 text-sm font-semibold text-neutral-300">
-              書き出し解像度
+              出力キャンバス
             </h2>
+            <div className="mb-2 flex flex-wrap gap-2">
+              {OUTPUT_ASPECTS.map((o) => (
+                <button
+                  key={o.key}
+                  onClick={() => setOutputAspect(o.key)}
+                  className={`rounded-md px-3 py-1.5 text-sm transition ${
+                    outputAspect === o.key
+                      ? "bg-amber-500 font-semibold text-neutral-950"
+                      : "bg-neutral-800 text-neutral-200 hover:bg-neutral-700"
+                  }`}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
+            <label className="mb-1 block text-xs text-neutral-500">
+              書き出し幅 (px)
+            </label>
             <select
-              value={canvasSize}
-              onChange={(e) => setCanvasSize(Number(e.target.value))}
+              value={outputWidth}
+              onChange={(e) => setOutputWidth(Number(e.target.value))}
               className="w-full rounded-md border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-100 focus:border-amber-500 focus:outline-none"
             >
-              {RESOLUTION_OPTIONS.map((r) => (
-                <option key={r.value} value={r.value}>
-                  {r.label}
+              {WIDTH_PRESETS.map((w) => (
+                <option key={w} value={w}>
+                  {w} px
                 </option>
               ))}
             </select>
+            <p className="mt-1.5 text-xs text-neutral-500">
+              出力サイズ: {canvasWidth} × {canvasHeight} px
+              {outputAspect !== "content" && (
+                <>
+                  （内容{Math.round(content.width)}×
+                  {Math.round(content.height)}を下寄せ、上は透明）
+                </>
+              )}
+            </p>
           </section>
 
           <section>
@@ -455,16 +729,58 @@ export default function Home() {
 
         <section className="flex flex-col gap-4">
           <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
-            <div className="mx-auto aspect-square w-full max-w-[720px] overflow-hidden rounded-md bg-black">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex gap-1 rounded-md bg-neutral-800 p-1">
+                <button
+                  onClick={() => setEditMode("sequence")}
+                  className={`rounded px-3 py-1 text-xs font-medium transition ${
+                    editMode === "sequence"
+                      ? "bg-amber-500 text-neutral-950"
+                      : "text-neutral-300 hover:text-neutral-100"
+                  }`}
+                >
+                  順序編集（クリックで追加）
+                </button>
+                <button
+                  onClick={() => setEditMode("arrangement")}
+                  className={`rounded px-3 py-1 text-xs font-medium transition ${
+                    editMode === "arrangement"
+                      ? "bg-amber-500 text-neutral-950"
+                      : "text-neutral-300 hover:text-neutral-100"
+                  }`}
+                >
+                  配置編集（ドラッグで入替）
+                </button>
+              </div>
+              <span className="text-xs text-neutral-500">
+                {editMode === "sequence"
+                  ? "タイルをクリックで「開ける順」に追加/解除"
+                  : "タイルをドラッグして別タイルにドロップで入れ替え"}
+              </span>
+            </div>
+            <div
+              className="mx-auto w-full max-w-[720px] overflow-hidden rounded-md"
+              style={{
+                aspectRatio: previewAspect,
+                background:
+                  "repeating-conic-gradient(#262626 0% 25%, #1a1a1a 0% 50%) 0 0 / 24px 24px",
+              }}
+            >
               <canvas
                 ref={previewCanvasRef}
                 onClick={onCanvasClick}
-                className={`h-full w-full ${image ? "cursor-pointer" : "cursor-default"}`}
+                onMouseDown={onCanvasMouseDown}
+                onMouseMove={onCanvasMouseMove}
+                onMouseUp={onCanvasMouseUp}
+                onMouseLeave={onCanvasMouseLeave}
+                className={`h-full w-full ${previewCursor}`}
               />
             </div>
             {image && (
               <p className="mt-2 text-center text-xs text-neutral-500">
-                プレビューのタイルをクリックすると「開ける順」に追加されます。もう一度クリックで解除。
+                {outputAspect !== "content"
+                  ? "上部の市松模様は透明領域（出力PNGでは透過）です。"
+                  : "プレビューと出力の比率は一致しています。"}
               </p>
             )}
           </div>

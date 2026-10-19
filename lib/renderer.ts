@@ -29,6 +29,13 @@ export const defaultTileStyle: TileStyle = {
   showCircledIndex: true,
 };
 
+export type Rect = { x: number; y: number; width: number; height: number };
+
+export type TileHighlight = {
+  draggingNum?: number | null;
+  hoverNum?: number | null;
+};
+
 export type RenderOptions = {
   image: CanvasImageSource;
   imageWidth: number;
@@ -36,8 +43,11 @@ export type RenderOptions = {
   gridSize: number;
   numbers: number[];
   revealedNumbers: ReadonlySet<number>;
-  canvasSize: number;
+  canvasWidth: number;
+  canvasHeight: number;
+  content: Rect;
   tileStyle: TileStyle;
+  highlight?: TileHighlight;
 };
 
 export function renderFrame(
@@ -51,30 +61,48 @@ export function renderFrame(
     gridSize,
     numbers,
     revealedNumbers,
-    canvasSize,
+    canvasWidth,
+    canvasHeight,
+    content,
     tileStyle,
+    highlight,
   } = opts;
 
-  ctx.clearRect(0, 0, canvasSize, canvasSize);
-  drawBackgroundCovered(ctx, image, imageWidth, imageHeight, canvasSize);
+  ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+  drawBackgroundCovered(ctx, image, imageWidth, imageHeight, content);
 
-  const cellSize = canvasSize / gridSize;
+  const cellW = content.width / gridSize;
+  const cellH = content.height / gridSize;
   const maxNumber = numbers.length;
   const labelFontSize = computeUniformLabelFontSize(
     ctx,
-    cellSize,
+    cellW,
+    cellH,
     maxNumber,
     tileStyle,
   );
+
+  const draggingNum = highlight?.draggingNum ?? null;
+  const hoverNum = highlight?.hoverNum ?? null;
 
   for (let row = 0; row < gridSize; row++) {
     for (let col = 0; col < gridSize; col++) {
       const idx = row * gridSize + col;
       const num = numbers[idx];
       if (revealedNumbers.has(num)) continue;
-      const tx = col * cellSize;
-      const ty = row * cellSize;
-      drawTile(ctx, tx, ty, cellSize, num, tileStyle, labelFontSize);
+      const tx = content.x + col * cellW;
+      const ty = content.y + row * cellH;
+      const isDragging = draggingNum != null && num === draggingNum;
+      const isHover =
+        hoverNum != null && num === hoverNum && hoverNum !== draggingNum;
+
+      if (isDragging) ctx.globalAlpha = 0.4;
+      drawTile(ctx, tx, ty, cellW, cellH, num, tileStyle, labelFontSize);
+      ctx.globalAlpha = 1;
+
+      if (isHover) {
+        drawHoverOutline(ctx, tx, ty, cellW, cellH, tileStyle);
+      }
     }
   }
 }
@@ -83,14 +111,16 @@ const SUFFIX_SCALE = 0.65;
 
 function computeUniformLabelFontSize(
   ctx: CanvasRenderingContext2D,
-  cellSize: number,
+  cellW: number,
+  cellH: number,
   maxNumber: number,
   style: TileStyle,
 ): number {
   const digitStr = String(maxNumber);
   const suffix = style.numberSuffix;
-  const maxWidth = cellSize * 0.82;
-  let fontSize = cellSize * 0.55;
+  const maxWidth = cellW * 0.82;
+  const maxHeight = cellH * 0.82;
+  let fontSize = Math.min(cellW, cellH) * 0.55;
   ctx.font = `900 ${fontSize}px ${style.fontFamily}`;
   const digitWidth = ctx.measureText(digitStr).width;
   const suffixWidth = suffix
@@ -100,6 +130,9 @@ function computeUniformLabelFontSize(
   if (totalWidth > maxWidth) {
     fontSize *= maxWidth / totalWidth;
   }
+  if (fontSize > maxHeight) {
+    fontSize = maxHeight;
+  }
   return fontSize;
 }
 
@@ -108,35 +141,47 @@ function drawBackgroundCovered(
   img: CanvasImageSource,
   iw: number,
   ih: number,
-  size: number,
+  content: Rect,
 ): void {
-  const scale = Math.max(size / iw, size / ih);
-  const sw = size / scale;
-  const sh = size / scale;
+  const scale = Math.max(content.width / iw, content.height / ih);
+  const sw = content.width / scale;
+  const sh = content.height / scale;
   const sx = (iw - sw) / 2;
   const sy = (ih - sh) / 2;
-  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, size, size);
+  ctx.drawImage(
+    img,
+    sx,
+    sy,
+    sw,
+    sh,
+    content.x,
+    content.y,
+    content.width,
+    content.height,
+  );
 }
 
 function drawTile(
   ctx: CanvasRenderingContext2D,
   x: number,
   y: number,
-  size: number,
+  w: number,
+  h: number,
   num: number,
   style: TileStyle,
   labelFontSize: number,
 ): void {
-  const radius = size * style.cornerRadiusRatio;
-  const borderWidth = size * style.borderWidthRatio;
-  const shadowBlur = size * style.shadowBlurRatio;
+  const minSize = Math.min(w, h);
+  const radius = minSize * style.cornerRadiusRatio;
+  const borderWidth = minSize * style.borderWidthRatio;
+  const shadowBlur = minSize * style.shadowBlurRatio;
 
   ctx.save();
   ctx.shadowColor = style.shadowColor;
   ctx.shadowBlur = shadowBlur;
-  ctx.shadowOffsetY = size * 0.015;
+  ctx.shadowOffsetY = minSize * 0.015;
   ctx.fillStyle = style.fillColor;
-  roundedRectPath(ctx, x, y, size, size, radius);
+  roundedRectPath(ctx, x, y, w, h, radius);
   ctx.fill();
   ctx.restore();
 
@@ -147,30 +192,58 @@ function drawTile(
     ctx,
     x + borderWidth / 2,
     y + borderWidth / 2,
-    size - borderWidth,
-    size - borderWidth,
+    w - borderWidth,
+    h - borderWidth,
     Math.max(0, radius - borderWidth / 2),
   );
   ctx.stroke();
   ctx.restore();
 
   if (style.showCircledIndex) {
-    drawCircledNumber(ctx, x, y, size, num, style);
+    drawCircledNumber(ctx, x, y, w, h, num, style);
   }
 
-  drawCenteredLabel(ctx, x, y, size, num, style, labelFontSize);
+  drawCenteredLabel(ctx, x, y, w, h, num, style, labelFontSize);
+}
+
+function drawHoverOutline(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  style: TileStyle,
+): void {
+  const minSize = Math.min(w, h);
+  const radius = minSize * style.cornerRadiusRatio;
+  const lineWidth = Math.max(2, minSize * 0.025);
+  ctx.save();
+  ctx.strokeStyle = "#fbbf24";
+  ctx.lineWidth = lineWidth;
+  roundedRectPath(
+    ctx,
+    x + lineWidth / 2,
+    y + lineWidth / 2,
+    w - lineWidth,
+    h - lineWidth,
+    Math.max(0, radius - lineWidth / 2),
+  );
+  ctx.stroke();
+  ctx.restore();
 }
 
 function drawCircledNumber(
   ctx: CanvasRenderingContext2D,
   tileX: number,
   tileY: number,
-  tileSize: number,
+  tileW: number,
+  tileH: number,
   num: number,
   style: TileStyle,
 ): void {
-  const circleRadius = tileSize * 0.055;
-  const margin = tileSize * 0.045;
+  const minSize = Math.min(tileW, tileH);
+  const circleRadius = minSize * 0.055;
+  const margin = minSize * 0.045;
   const cx = tileX + margin + circleRadius;
   const cy = tileY + margin + circleRadius;
 
@@ -178,7 +251,7 @@ function drawCircledNumber(
   ctx.beginPath();
   ctx.arc(cx, cy, circleRadius, 0, Math.PI * 2);
   ctx.strokeStyle = style.numberColor;
-  ctx.lineWidth = Math.max(1, tileSize * 0.006);
+  ctx.lineWidth = Math.max(1, minSize * 0.006);
   ctx.stroke();
 
   const fontSize = circleRadius * 1.35;
@@ -194,7 +267,8 @@ function drawCenteredLabel(
   ctx: CanvasRenderingContext2D,
   tileX: number,
   tileY: number,
-  tileSize: number,
+  tileW: number,
+  tileH: number,
   num: number,
   style: TileStyle,
   fontSize: number,
@@ -220,8 +294,8 @@ function drawCenteredLabel(
   }
 
   const totalWidth = digitWidth + suffixWidth;
-  const startX = tileX + (tileSize - totalWidth) / 2;
-  const baselineY = tileY + tileSize / 2 + (ascent - descent) / 2;
+  const startX = tileX + (tileW - totalWidth) / 2;
+  const baselineY = tileY + tileH / 2 + (ascent - descent) / 2;
 
   const offset = fontSize * style.numberShadowOffsetRatio;
 
@@ -304,13 +378,23 @@ export function getTileAtPoint(
   canvas: HTMLCanvasElement,
   gridSize: number,
   numbers: number[],
+  canvasWidth: number,
+  canvasHeight: number,
+  content: Rect,
 ): number | null {
   const rect = canvas.getBoundingClientRect();
-  const relX = (clientX - rect.left) / rect.width;
-  const relY = (clientY - rect.top) / rect.height;
-  if (relX < 0 || relX >= 1 || relY < 0 || relY >= 1) return null;
-  const col = Math.floor(relX * gridSize);
-  const row = Math.floor(relY * gridSize);
+  const canvasX = ((clientX - rect.left) / rect.width) * canvasWidth;
+  const canvasY = ((clientY - rect.top) / rect.height) * canvasHeight;
+  if (
+    canvasX < content.x ||
+    canvasX >= content.x + content.width ||
+    canvasY < content.y ||
+    canvasY >= content.y + content.height
+  ) {
+    return null;
+  }
+  const col = Math.floor(((canvasX - content.x) / content.width) * gridSize);
+  const row = Math.floor(((canvasY - content.y) / content.height) * gridSize);
   const idx = row * gridSize + col;
   return numbers[idx] ?? null;
 }
