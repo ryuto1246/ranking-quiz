@@ -19,7 +19,13 @@ import {
   type Rect,
   type TileStyle,
 } from "@/lib/renderer";
-import { randomSeedString, seededShuffle } from "@/lib/random";
+import {
+  encodePermToSeed,
+  isPermSeed,
+  randomSeedString,
+  seededShuffle,
+  tryDecodePermSeed,
+} from "@/lib/random";
 import { downloadZip } from "@/lib/download";
 
 const GRID_OPTIONS = [3, 4, 5, 6, 7] as const;
@@ -163,12 +169,17 @@ export default function Home() {
   );
 
   useEffect(() => {
-    setNumbers(
-      seededShuffle(
-        Array.from({ length: totalTiles }, (_, i) => i + 1),
-        `${seed}::${gridSize}`,
-      ),
-    );
+    const decoded = tryDecodePermSeed(seed, totalTiles);
+    if (decoded) {
+      setNumbers(decoded);
+    } else {
+      setNumbers(
+        seededShuffle(
+          Array.from({ length: totalTiles }, (_, i) => i + 1),
+          `${seed}::${gridSize}`,
+        ),
+      );
+    }
     setSequence([]);
     setRevealedStep(0);
   }, [seed, gridSize, totalTiles]);
@@ -351,13 +362,24 @@ export default function Home() {
   };
 
   const resetArrangement = () => {
-    setNumbers(
-      seededShuffle(
-        Array.from({ length: totalTiles }, (_, i) => i + 1),
-        `${seed}::${gridSize}`,
-      ),
-    );
+    const decoded = tryDecodePermSeed(seed, totalTiles);
+    if (decoded) {
+      setNumbers(decoded);
+    } else {
+      setNumbers(
+        seededShuffle(
+          Array.from({ length: totalTiles }, (_, i) => i + 1),
+          `${seed}::${gridSize}`,
+        ),
+      );
+    }
   };
+
+  const applyCurrentArrangementToSeed = () => {
+    setSeed(encodePermToSeed(numbers));
+  };
+
+  const currentIsPermSeed = isPermSeed(seed);
 
   const removeFromSequence = (num: number) => {
     setSequence((prev) => {
@@ -614,14 +636,24 @@ export default function Home() {
               className="w-full rounded-md border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-100 focus:border-amber-500 focus:outline-none"
             />
             <p className="mt-1.5 text-xs text-neutral-500">
-              同じシード & グリッドなら同じ配置を再現できます。手動の入れ替え後は「配置リセット」でシード通りに戻せます。
+              {currentIsPermSeed
+                ? "配置固定シード (perm:v1:…) — 配置をそのまま復元します。コピーして保存すればいつでも同じ配置を再現可能。"
+                : "同じシード & グリッドなら同じ配置を再現できます。手動入れ替え後は「現在の配置をシード化」で固定シードに変換可能。"}
             </p>
-            <button
-              onClick={resetArrangement}
-              className="mt-2 rounded-md bg-neutral-800 px-2.5 py-1 text-xs text-neutral-300 transition hover:bg-neutral-700"
-            >
-              配置リセット
-            </button>
+            <div className="mt-2 flex flex-wrap gap-1">
+              <button
+                onClick={applyCurrentArrangementToSeed}
+                className="rounded-md bg-neutral-800 px-2.5 py-1 text-xs text-neutral-300 transition hover:bg-neutral-700"
+              >
+                現在の配置をシード化
+              </button>
+              <button
+                onClick={resetArrangement}
+                className="rounded-md bg-neutral-800 px-2.5 py-1 text-xs text-neutral-300 transition hover:bg-neutral-700"
+              >
+                配置リセット
+              </button>
+            </div>
           </section>
 
           <section>

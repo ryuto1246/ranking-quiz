@@ -35,3 +35,34 @@ export function randomSeedString(): string {
   }
   return s;
 }
+
+const PERM_SEED_PREFIX = "perm:v1:";
+
+export function encodePermToSeed(numbers: readonly number[]): string {
+  return `${PERM_SEED_PREFIX}${numbers.join("-")}`;
+}
+
+export function tryDecodePermSeed(
+  seed: string,
+  expectedLength: number,
+): number[] | null {
+  if (!seed.startsWith(PERM_SEED_PREFIX)) return null;
+  const body = seed.slice(PERM_SEED_PREFIX.length);
+  if (!body) return null;
+  const parts = body.split("-");
+  if (parts.length !== expectedLength) return null;
+  const nums: number[] = [];
+  const seen = new Set<number>();
+  for (const p of parts) {
+    const n = Number.parseInt(p, 10);
+    if (!Number.isInteger(n) || n < 1 || n > expectedLength) return null;
+    if (seen.has(n)) return null;
+    seen.add(n);
+    nums.push(n);
+  }
+  return nums;
+}
+
+export function isPermSeed(seed: string): boolean {
+  return seed.startsWith(PERM_SEED_PREFIX);
+}
